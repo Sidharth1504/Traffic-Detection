@@ -1,8 +1,8 @@
 import cv2
 import json
 import time
-import argparse
 import datetime
+import requests
 from model import VehicleDetector
 from algorithm import optimize_intersections
 from utils import draw_roi, draw_detections
@@ -44,13 +44,10 @@ def compute_intersections_from_grid(grid_config, frame_width, frame_height):
     return intersections
 
 def main():
-    parser = argparse.ArgumentParser(description="Smart Traffic Management System")
-    parser.add_argument("--output", choices=["video", "json"], default="video",
-                        help="Output method: 'video' for displaying video output, 'json' for json output only")
-    args = parser.parse_args()
 
     config = load_config("config.json")
-    video_path = "data/sample_video8.mp4"
+    url = "https://api.ibreakstuff.upayan.dev/"
+    video_path = "data/sample_video9.mp4"
     cap = cv2.VideoCapture(video_path)
     # cap = cv2.VideoCapture(1)  # Changed from video path to default camera
     if not cap.isOpened():
@@ -149,34 +146,41 @@ def main():
                     "cars": counts["car"],
                     "ambulances": counts["ambulance"],
                     "schoolbuses": counts["schoolbus"],
+                    "accidents": counts["accident"],  # Add accident count
                     "signal": signal
                 })
                 if counts["accident"] > 0:
                     print(f"ALERT: Accident detected at Intersection {inter_no}, Road {road_no}")
+        
+        print(json.dumps(final_output_signals))
+        try:
+            response = requests.post(url+"/traffic/signal-data", json={"data": final_output_signals}, timeout=5)
+            if response.status_code == 204:
+                print("Data sent successfully")
+            else:
+                print(f"Failed to send data. Status code: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"An error occurred while sending data: {e}")
 
-        if args.output == "json":
-            output_data.append(final_output_signals)
-        elif args.output == "video":
-            for inter_no, inter_data in intersections_config.items():
-                roads_config = inter_data.get("roads", {})
-                for road_no, roi in roads_config.items():
-                    x, y, w, h = [int(coord * scale_factor) for coord in roi]
-                    counts = traffic_data[inter_no].get(road_no, {"car": 0, "ambulance": 0, "schoolbus": 0, "accident": 0})
-                    decision = next((item for item in final_output_signals
-                                     if item["intersection"] == inter_no and item["road"] == road_no), None)
-                    signal = decision["signal"] if decision else "UNKNOWN"
-                    draw_roi(frame, (x, y, w, h), inter_no, road_no, counts, signal)
+        for inter_no, inter_data in intersections_config.items():
+            roads_config = inter_data.get("roads", {})
+            for road_no, roi in roads_config.items():
+                x, y, w, h = [int(coord * scale_factor) for coord in roi]
+                counts = traffic_data[inter_no].get(road_no, {"car": 0, "ambulance": 0, "schoolbus": 0, "accident": 0})
+                decision = next((item for item in final_output_signals
+                                    if item["intersection"] == inter_no and item["road"] == road_no), None)
+                signal = decision["signal"] if decision else "UNKNOWN"
+                draw_roi(frame, (x, y, w, h), inter_no, road_no, counts, signal)
 
-            cv2.imshow("Smart Traffic Management System", frame)
-            if cv2.waitKey(30) & 0xFF == ord('q'):
-                break
+        cv2.imshow("Smart Traffic Management System", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release()
-    if args.output == "json":
-        with open("traffic_data.json", "w") as f:
-            json.dump(output_data, f, indent=4)
-    elif args.output == "video":
-        cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

@@ -15,9 +15,9 @@ class VehicleDetector:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])
                 cls = int(box.cls[0])
-                class_names = {0: 'car', 1: 'ambulance', 2: 'schoolbus', 3: 'accident'}
+                class_names = {0: 'accident', 1: 'ambulance', 2: 'car', 3: 'schoolbus'}
                 class_name = class_names.get(cls, 'unknown')
-                if conf < 0.5:
+                if conf < 0.3:
                     continue
                 detections.append({'bbox': (x1, y1, x2, y2), 'confidence': conf, 'class': class_name})
         return detections

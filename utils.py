@@ -4,7 +4,7 @@ def draw_roi(frame, roi, inter_no, road_no, counts, signal):
     x, y, w, h = roi
     color = (0, 255, 0) if signal == "GREEN" else (0, 0, 255)
     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-    text = f"I{inter_no} R{road_no}: C{counts.get('car', 0)} A{counts.get('ambulance', 0)} S{counts.get('schoolbus', 0)} | {signal}"
+    text = f"I{inter_no} R{road_no}: C{counts['car']} A{counts['ambulance']} S{counts['schoolbus']} Acc{counts['accident']} | {signal}"
     text_y = max(y - 10, 20)
     cv2.putText(frame, text, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
