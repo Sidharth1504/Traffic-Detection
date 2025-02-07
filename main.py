@@ -2,7 +2,6 @@ import cv2
 import json
 import time
 import datetime
-import requests
 from model import VehicleDetector
 from algorithm import optimize_intersections
 from utils import draw_roi, draw_detections
@@ -12,14 +11,20 @@ def load_config(path="config.json"):
         return json.load(f)
 
 def compute_intersections_from_grid(grid_config, frame_width, frame_height):
+    """
+    Given grid parameters and frame dimensions, compute a dictionary for intersections.
+    Each intersection has four road ROIs (North, South, East, West) computed relative
+    to its cell's base position. The image is equally divided into six intersections.
+    """
     intersections = {}
-    rows = grid_config["rows"]
-    cols = grid_config["cols"]
+    rows = grid_config["rows"]  
+    cols = grid_config["cols"]  
     roi_width = grid_config["roi_width"]
     roi_height = grid_config["roi_height"]
     start_x = grid_config["start_x"]
     start_y = grid_config["start_y"]
 
+    # Calculate cell dimensions to equally divide the frame
     cell_width = frame_width / cols
     cell_height = frame_height / rows
 
@@ -30,24 +35,20 @@ def compute_intersections_from_grid(grid_config, frame_width, frame_height):
             base_y = row * cell_height
             intersections[str(inter_id)] = {
                 "roads": {
-                    "north": [int(base_x + cell_width / 2 - roi_width / 2),
-                              int(base_y + cell_height / 4 - roi_height / 2), roi_width, roi_height],
-                    "south": [int(base_x + cell_width / 2 - roi_width / 2),
-                              int(base_y + 3 * cell_height / 4 - roi_height / 2), roi_width, roi_height],
-                    "east": [int(base_x + 3 * cell_width / 4 - roi_width / 2),
-                             int(base_y + cell_height / 2 - roi_height / 2), roi_width, roi_height],
-                    "west": [int(base_x + cell_width / 4 - roi_width / 2),
-                             int(base_y + cell_height / 2 - roi_height / 2), roi_width, roi_height]
+                    "north": [int(base_x + cell_width / 2 - roi_width / 2), int(base_y + cell_height / 4 - roi_height / 2), roi_width, roi_height],
+                    "south": [int(base_x + cell_width / 2 - roi_width / 2), int(base_y + 3 * cell_height / 4 - roi_height / 2), roi_width, roi_height],
+                    "east": [int(base_x + 3 * cell_width / 4 - roi_width / 2), int(base_y + cell_height / 2 - roi_height / 2), roi_width, roi_height],
+                    "west": [int(base_x + cell_width / 4 - roi_width / 2), int(base_y + cell_height / 2 - roi_height / 2), roi_width, roi_height]
                 }
             }
             inter_id += 1
     return intersections
 
+
 def main():
 
     config = load_config("config.json")
-    url = "https://api.ibreakstuff.upayan.dev/"
-    video_path = "data/sample_video9.mp4"
+    video_path = "data/sample_video8.mp4"
     cap = cv2.VideoCapture(video_path)
     # cap = cv2.VideoCapture(1)  # Changed from video path to default camera
     if not cap.isOpened():
@@ -64,7 +65,7 @@ def main():
 
     detector = VehicleDetector()
 
-    scale_factor = 2
+    scale_factor = 1
     min_phase_duration = config.get("min_phase_duration", 5)
     last_phase_state = {}
     last_phase_switch_time = {}
@@ -146,21 +147,12 @@ def main():
                     "cars": counts["car"],
                     "ambulances": counts["ambulance"],
                     "schoolbuses": counts["schoolbus"],
-                    "accidents": counts["accident"],  # Add accident count
                     "signal": signal
                 })
                 if counts["accident"] > 0:
                     print(f"ALERT: Accident detected at Intersection {inter_no}, Road {road_no}")
         
-        print(json.dumps(final_output_signals))
-        try:
-            response = requests.post(url+"/traffic/signal-data", json={"data": final_output_signals}, timeout=5)
-            if response.status_code == 204:
-                print("Data sent successfully")
-            else:
-                print(f"Failed to send data. Status code: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"An error occurred while sending data: {e}")
+        print(final_output_signals)
 
         for inter_no, inter_data in intersections_config.items():
             roads_config = inter_data.get("roads", {})
@@ -173,11 +165,8 @@ def main():
                 draw_roi(frame, (x, y, w, h), inter_no, road_no, counts, signal)
 
         cv2.imshow("Smart Traffic Management System", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(30) & 0xFF == ord('q'):
             break
-
-    cap.release()
-    cv2.destroyAllWindows()
 
     cap.release()
     cv2.destroyAllWindows()
