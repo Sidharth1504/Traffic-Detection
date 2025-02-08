@@ -47,7 +47,6 @@ class DeepRLAgent:
         self.batch_size = 32
     
     def choose_action(self, state):
-        # state: numpy array of shape (input_dim,)
         if random.random() < self.epsilon:
             return random.randrange(self.output_dim)
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -76,19 +75,12 @@ class DeepRLAgent:
         self.optimizer.step()
     
     def train_agent(self, episodes=1000, steps_per_episode=10):
-        # Train on simulated environment with multi-modal state:
-        # state = [ns_count, ew_count, weather, connected_vehicle_ratio]
         for episode in range(episodes):
             state = np.array([random.randint(0,20), random.randint(0,20), random.random(), random.random()])
             for _ in range(steps_per_episode):
                 action = self.choose_action(state)
                 ns, ew, weather, conn = state
-                # Reward: if action 0 (phase A), delay = ew; if action 1 (phase B), delay = ns.
-                # Also penalize bad weather.
-                if action == 0:
-                    reward = - (ew + weather * 2)
-                else:
-                    reward = - (ns + weather * 2)
+                reward = - (ew + weather * 2) if action == 0 else - (ns + weather * 2)
                 next_state = np.array([random.randint(0,20), random.randint(0,20), random.random(), random.random()])
                 done = False
                 self.replay_buffer.push(state, action, reward, next_state, done)
@@ -96,28 +88,18 @@ class DeepRLAgent:
                 self.update()
     
     def get_optimal_signals(self, traffic_data, config):
-        """
-        For each intersection, build a state vector:
-            ns = car count on north + south
-            ew = car count on east + west
-            weather = simulated weather (0 to 1)
-            connected = simulated connected vehicle ratio (0 to 1)
-        Then use the learned model to choose an action.
-        Action 0 -> GREEN for north/south, Action 1 -> GREEN for east/west.
-        """
         rl_signals = {}
         base_duration = config.get("base_duration", 10)
         extension_factor = config.get("extension_factor", 0.5)
         max_extension = config.get("max_extension", 20)
-        
         for inter_no, roads in traffic_data.items():
             ns = roads.get("north", {}).get("car", 0) + roads.get("south", {}).get("car", 0)
             ew = roads.get("east", {}).get("car", 0) + roads.get("west", {}).get("car", 0)
-            weather = random.random()         # Simulated: 0 = good, 1 = bad
-            connected = random.random()         # Simulated ratio
+            weather = random.random()
+            connected = random.random()
             state = np.array([ns, ew, weather, connected])
             action = self.choose_action(state)
-            effective_count = ns if action == 1 else ew  # Delay is count on opposite roads.
+            effective_count = ns if action == 1 else ew
             dynamic_duration = base_duration + min(effective_count * extension_factor, max_extension)
             rl_signals[inter_no] = {}
             for road in roads.keys():
@@ -131,5 +113,5 @@ class DeepRLAgent:
                 }
         return rl_signals
 
-# For backwards compatibility
+# For backwards compatibility.
 RLAgent = DeepRLAgent

@@ -4,10 +4,12 @@ import time
 import datetime
 import asyncio
 import aiohttp
+import shutil
 from model import VehicleDetector
 from algorithm import optimize_intersections
-from utils import draw_roi, draw_detections
-from rl_agent import RLAgent  # This now is our DRL agent
+from utils import draw_roi, draw_detections, log_congestion
+from rl_agent import RLAgent
+from ml_predictor import MLModel
 
 def load_config(path="config.json"):
     with open(path, "r") as f:
@@ -16,7 +18,7 @@ def load_config(path="config.json"):
 def compute_intersections_from_grid(grid_config, frame_width, frame_height):
     """
     Computes intersection ROIs given grid parameters.
-    Each intersection has 4 road ROIs: north, south, east, west.
+    Each intersection has four road ROIs (north, south, east, west).
     """
     intersections = {}
     rows = grid_config["rows"]
@@ -26,7 +28,6 @@ def compute_intersections_from_grid(grid_config, frame_width, frame_height):
 
     cell_width = frame_width / cols
     cell_height = frame_height / rows
-
     inter_id = 1
     for row in range(rows):
         for col in range(cols):
@@ -61,9 +62,9 @@ async def send_data(session, url, data):
 async def main():
     url = "https://api.ibreakstuff.upayan.dev/"
     config = load_config("config.json")
+    # cap = cv2.VideoCapture(1)
     video_path = "data/sample_video8.mp4"
     cap = cv2.VideoCapture(video_path)
-    # cap = cv2.VideoCapture(1)  # Using default camera
     if not cap.isOpened():
         print("Error: Could not open video.")
         return
@@ -78,12 +79,12 @@ async def main():
 
     detector = VehicleDetector()
     scale_factor = 1.5
-    min_phase_duration = config.get("min_phase_duration", 5)
+    min_phase_duration = config.get("min_phase_duration", 10)
     last_phase_state = {}
     last_phase_switch_time = {}
     config["last_school_bus_green"] = config.get("last_school_bus_green", datetime.datetime.now())
 
-    # Prediction data for vehicle counts (exponential moving average)
+    # Initialize prediction data for each intersection (using an exponential moving average).
     prediction_data = {}
     for inter_no, inter_data in intersections_config.items():
         prediction_data[inter_no] = {}
@@ -91,15 +92,19 @@ async def main():
             prediction_data[inter_no][road_no] = {"car": 0, "ambulance": 0, "schoolbus": 0, "accident": 0}
     alpha = config.get("prediction_alpha", 0.7)
 
-    # Instantiate and train the DRL agent
-    rl_agent = RLAgent()  # This is our deep RL agent
+    # Instantiate and (optionally) train the DRL agent.
+    rl_agent = RLAgent()
     if config.get("train_rl_agent", False):
         print("Training DRL Agent ...")
         rl_agent.train_agent(episodes=config.get("rl_training_episodes", 1000))
         print("DRL Training complete.")
 
-    # Toggle flag for DRL (RL) optimized mode.
-    use_rl_agent = config.get("use_rl_agent", False)
+    # Instantiate and train the ML predictor.
+    ml_model = MLModel()
+    ml_model.train_model()
+
+    # Set the operation mode: "normal", "ml", or "rl"
+    operation_mode = config.get("operation_mode", "normal")
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -107,10 +112,9 @@ async def main():
             if not ret:
                 print("End of video stream.")
                 break
-
             frame = cv2.resize(frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
 
-            # Gather traffic counts for each intersection ROI.
+            # Gather traffic counts from each ROI.
             traffic_data = {}
             for inter_no, inter_data in intersections_config.items():
                 traffic_data[inter_no] = {}
@@ -120,13 +124,11 @@ async def main():
                         print(f"Skipping invalid ROI for Intersection {inter_no}, Road {road_no}")
                         traffic_data[inter_no][road_no] = {"car": 0, "ambulance": 0, "schoolbus": 0, "accident": 0}
                         continue
-
                     roi_frame = frame[y:y+h, x:x+w]
                     if roi_frame.size == 0:
                         print(f"Empty ROI for Intersection {inter_no}, Road {road_no}")
                         traffic_data[inter_no][road_no] = {"car": 0, "ambulance": 0, "schoolbus": 0, "accident": 0}
                         continue
-
                     detections = detector.detect_vehicles(roi_frame)
                     counts = {"car": 0, "ambulance": 0, "schoolbus": 0, "accident": 0}
                     for detection in detections:
@@ -136,16 +138,19 @@ async def main():
                     draw_detections(roi_frame, detections)
                     frame[y:y+h, x:x+w] = roi_frame
 
-                    # Update exponential moving average prediction for "car"
+                    # Update prediction using an exponential moving average.
                     prev_pred = prediction_data[inter_no][road_no]["car"]
                     current_count = counts["car"]
                     new_pred = alpha * current_count + (1 - alpha) * prev_pred
                     prediction_data[inter_no][road_no]["car"] = new_pred
 
             current_time = datetime.datetime.now()
-            # Use our hybrid optimization that uses rule‑based or DRL‑based decisions.
-            output_signals, computed_phases = optimize_intersections(traffic_data, prediction_data, config, current_time, rl_agent if use_rl_agent else None)
-
+            # Call the optimization algorithm. (Pass the ml_model to allow ML mode.)
+            output_signals, computed_phases = optimize_intersections(
+                traffic_data, prediction_data, config, current_time,
+                rl_agent if operation_mode == "rl" else None,
+                ml_model if operation_mode == "ml" else None
+            )
             current_time_sec = time.time()
             final_phases = {}
             for inter_no, new_phase in computed_phases.items():
@@ -165,15 +170,16 @@ async def main():
                     else:
                         final_phases[inter_no] = prev_phase
 
-            # Ensure each signal has a mode label.
             for signal in output_signals:
                 if "mode" not in signal:
-                    signal["mode"] = "Normal"
+                    # Append the current mode to the output.
+                    signal["mode"] = operation_mode.capitalize()
 
+            # Log congestion history every cycle.
+            log_congestion(traffic_data, current_time)
             print(json.dumps(output_signals, indent=2))
             asyncio.create_task(send_data(session, url, output_signals))
 
-            # Draw ROIs with annotations on the frame.
             for inter_no, inter_data in intersections_config.items():
                 for road_no, roi in inter_data.get("roads", {}).items():
                     x, y, w, h = [int(coord * scale_factor) for coord in roi]
@@ -186,14 +192,22 @@ async def main():
 
             cv2.imshow("Intelligent Traffic Management System", frame)
             key = cv2.waitKey(30) & 0xFF
-            # Press 'q' to quit.
             if key == ord('q'):
                 break
-            # Press 'T' to toggle DRL (RL) optimized mode.
+            # Press 't' to toggle DRL mode (only applicable if you want to switch between ml/normal and rl).
             if key == ord('t'):
-                use_rl_agent = not use_rl_agent
-                print(f"DRL Optimized Mode toggled to {use_rl_agent}")
+                if operation_mode != "rl":
+                    operation_mode = "rl"
+                else:
+                    # Toggle back to normal (or ml) based on config.
+                    operation_mode = config.get("operation_mode", "normal")
+                print(f"Operation Mode toggled to {operation_mode}")
             await asyncio.sleep(0)
+
+        # At session end, save a copy of the congestion log.
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy("congestion_log.txt", f"session_log_{timestamp}.txt")
+        print(f"Session log saved as session_log_{timestamp}.txt")
     await asyncio.gather(*asyncio.all_tasks() - {asyncio.current_task()})
     cap.release()
     cv2.destroyAllWindows()
