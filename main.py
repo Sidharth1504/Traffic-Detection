@@ -46,7 +46,7 @@ def compute_intersections_from_grid(grid_config, frame_width, frame_height):
 
 async def send_data(session, url, data):
     try:
-        async with session.post(url + "traffic/signal-data", json={"data": data}, timeout=5) as response:
+        async with session.post(url + "/traffic/signal-data", json={"data": data}, timeout=5) as response:
             if response.status == 204:
                 print("Data sent successfully")
             else:
@@ -60,7 +60,7 @@ async def send_data(session, url, data):
         print(f"An error occurred while sending data: {e}")
 
 async def main():
-    url = "https://api.ibreakstuff.upayan.dev/"
+    url = "https://api.ibreakstuff.upayan.dev//"
     config = load_config("config.json")
     # cap = cv2.VideoCapture(1)
     video_path = "data/sample_video8.mp4"
@@ -155,23 +155,25 @@ async def main():
             )
             current_time_sec = time.time()
             final_phases = {}
-            for inter_no, new_phase in computed_phases.items():
-                if inter_no not in last_phase_state:
-                    last_phase_state[inter_no] = new_phase
-                    last_phase_switch_time[inter_no] = current_time_sec
-                    final_phases[inter_no] = new_phase
-                else:
-                    prev_phase = last_phase_state[inter_no]
-                    if new_phase != prev_phase:
-                        if current_time_sec - last_phase_switch_time[inter_no] >= min_phase_duration:
-                            last_phase_state[inter_no] = new_phase
-                            last_phase_switch_time[inter_no] = current_time_sec
-                            final_phases[inter_no] = new_phase
-                        else:
-                            final_phases[inter_no] = prev_phase
-                    else:
-                        final_phases[inter_no] = prev_phase
-
+                        # Adjust computed phases based on vehicle counts:
+            # For each intersection, if the currently computed phase has zero cars
+            # and the opposite phase has some cars, force a switch.
+            for inter_no in computed_phases:
+                if computed_phases[inter_no] == "A":
+                    # For Phase A, sum the counts on north and south.
+                    count_current = (traffic_data[inter_no].get("north", {}).get("car", 0) +
+                                     traffic_data[inter_no].get("south", {}).get("car", 0))
+                    count_other   = (traffic_data[inter_no].get("east", {}).get("car", 0) +
+                                     traffic_data[inter_no].get("west", {}).get("car", 0))
+                else:  # computed_phases[inter_no] == "B"
+                    count_current = (traffic_data[inter_no].get("east", {}).get("car", 0) +
+                                     traffic_data[inter_no].get("west", {}).get("car", 0))
+                    count_other   = (traffic_data[inter_no].get("north", {}).get("car", 0) +
+                                     traffic_data[inter_no].get("south", {}).get("car", 0))
+                # If the current phase has no vehicles but the other has, force a switch.
+                if count_current == 0 and count_other > 0:
+                    computed_phases[inter_no] = "B" if computed_phases[inter_no] == "A" else "A"
+                    print(f"Intersection {inter_no}: Switching phase due to zero cars in current phase.")
             for signal in output_signals:
                 if "mode" not in signal:
                     # Append the current mode to the output.

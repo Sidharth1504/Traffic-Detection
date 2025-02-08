@@ -44,17 +44,15 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
     Enhanced optimization that includes:
       - Dynamic greenlight timing using real-time car counts.
       - Emergency mode: at any intersection, if an ambulance is detected on any road,
-        that intersection enters emergency mode. In emergency mode, the road with the
-        ambulance is forced GREEN while others follow normal logic.
+        the entire phase containing that road is set to GREEN.
       - Fuzzy logic control (if enabled) in normal mode.
       - ML–optimized (proactive) mode: an ML model predicts the optimal green time based
         on effective vehicle count and current time.
       - School release time adjustment.
       - Adds an overall congestion level for the intersection.
-      - **New:** If an accident is detected on a road, that road’s signal is forced GREEN.
-    Also ensures that at least one road is always green and enforces a minimum phase duration.
+      - Accident detection is reported only (and does not affect the signal).
+    Also ensures that one entire phase is always green and enforces a minimum phase duration.
     """
-    # Determine the overall operation mode: "normal", "ml", or "rl".
     operation_mode = config.get("operation_mode", "normal")
     use_fuzzy_logic = config.get("use_fuzzy_logic", False)
     results = {}
@@ -70,11 +68,16 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                 emergency_road = road
                 break
         if emergency_detected:
+            # Determine the emergency phase based on the road where the ambulance was detected.
+            if emergency_road in ["north", "south"]:
+                emergency_phase = "A"
+            else:
+                emergency_phase = "B"
             results[inter_no] = {
                 "phase": "EMERGENCY",
                 "roads": roads,
                 "dynamic_duration": 15,
-                "emergency_road": emergency_road
+                "emergency_phase": emergency_phase
             }
             continue
 
@@ -124,7 +127,6 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
         dynamic_duration = data["dynamic_duration"]
         # Compute phase green times based on actual car counts.
         lane_green_times = compute_phase_green_times(roads, total_cycle=120)
-        # Compute overall congestion level for the intersection.
         total_cars = sum(roads.get(r, {}).get("car", 0) for r in ["north", "south", "east", "west"])
         if total_cars > 50:
             congestion_level = "high"
@@ -133,10 +135,13 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
         else:
             congestion_level = "low"
         for road_no, counts in roads.items():
-            # Determine signal based on phase.
             if phase == "EMERGENCY":
-                emergency_road = data.get("emergency_road")
-                signal = "GREEN" if road_no == emergency_road else "RED"
+                # Use emergency_phase to determine which phase should be GREEN.
+                emergency_phase = data.get("emergency_phase")
+                if emergency_phase == "A":
+                    signal = "GREEN" if road_no in ["north", "south"] else "RED"
+                else:
+                    signal = "GREEN" if road_no in ["east", "west"] else "RED"
             else:
                 if phase == "A" and road_no in ["north", "south"]:
                     signal = "GREEN"
@@ -144,7 +149,7 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                     signal = "GREEN"
                 else:
                     signal = "RED"
-            # **New:** If an accident is detected on this road, force its signal to GREEN.
+            # Accident detection is now only reported, not affecting the signal.
             out_item = {
                 "intersection": inter_no,
                 "road": road_no,
@@ -162,7 +167,6 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
             if counts.get("accident", 0) > 0:
                 print(f"ALERT: Accident detected at Intersection {inter_no}, Road {road_no}")
 
-    # If RL mode is chosen, override outputs with RL agent recommendations.
     if operation_mode == "rl" and rl_agent is not None:
         rl_signals = rl_agent.get_optimal_signals(traffic_data, config)
         for inter_id, roads in rl_signals.items():
@@ -173,23 +177,17 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                         out["dynamic_green_duration"] = rl_data["dynamic_duration"]
                         out["mode"] = "DRL_Optimized"
 
-    # Ensure at least one road is green per intersection.
-    intersections_set = set(item["intersection"] for item in output)
-    for inter_no in intersections_set:
-        if results.get(inter_no, {}).get("phase") == "EMERGENCY":
+    # Ensure that one entire phase is active at each intersection.
+    # For non-emergency intersections, if phase is "A", then north & south must be green; if "B", then east & west.
+    for inter_no, data in results.items():
+        if data.get("phase") == "EMERGENCY":
             continue
-        signals = [item["signal"] for item in output if item["intersection"] == inter_no]
-        if "GREEN" not in signals:
-            forced = False
-            for item in output:
-                if item["intersection"] == inter_no and item["road"] == "north":
-                    item["signal"] = "GREEN"
-                    forced = True
-                    break
-            if not forced:
-                for item in output:
-                    if item["intersection"] == inter_no:
-                        item["signal"] = "GREEN"
-                        break
+        computed_phase = data["phase"]
+        for out_item in output:
+            if out_item["intersection"] == inter_no:
+                if computed_phase == "A":
+                    out_item["signal"] = "GREEN" if out_item["road"] in ["north", "south"] else "RED"
+                elif computed_phase == "B":
+                    out_item["signal"] = "GREEN" if out_item["road"] in ["east", "west"] else "RED"
 
     return output, {k: v["phase"] for k, v in results.items()}
