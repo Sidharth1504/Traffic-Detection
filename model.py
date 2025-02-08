@@ -17,7 +17,7 @@ class VehicleDetector:
                 cls = int(box.cls[0])
                 class_names = {0: 'accident', 1: 'ambulance', 2: 'car', 3: 'schoolbus'}
                 class_name = class_names.get(cls, 'unknown')
-                if conf < 0.1:
+                if conf < 0.6:
                     continue
                 detection = {'bbox': (x1, y1, x2, y2), 'confidence': conf, 'class': class_name}
                 if class_name == "ambulance":

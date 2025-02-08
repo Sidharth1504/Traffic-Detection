@@ -65,6 +65,7 @@ async def main():
     # cap = cv2.VideoCapture(1)
     video_path = "data/sample_video8.mp4"
     cap = cv2.VideoCapture(video_path)
+    modes = ["normal", "ml", "rl"]
     if not cap.isOpened():
         print("Error: Could not open video.")
         return
@@ -105,6 +106,7 @@ async def main():
 
     # Set the operation mode: "normal", "ml", or "rl"
     operation_mode = config.get("operation_mode", "normal")
+    mode_index = modes.index(operation_mode)
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -196,12 +198,9 @@ async def main():
                 break
             # Press 't' to toggle DRL mode (only applicable if you want to switch between ml/normal and rl).
             if key == ord('t'):
-                if operation_mode != "rl":
-                    operation_mode = "rl"
-                else:
-                    # Toggle back to normal (or ml) based on config.
-                    operation_mode = config.get("operation_mode", "normal")
-                print(f"Operation Mode toggled to {operation_mode}")
+                mode_index = (mode_index + 1) % len(modes)
+                operation_mode = modes[mode_index]
+                print(f"Operation Mode switched to {operation_mode}")
             await asyncio.sleep(0)
 
         # At session end, save a copy of the congestion log.

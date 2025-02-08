@@ -13,16 +13,13 @@ def compute_phase_green_times(roads_counts, total_cycle=120):
     
     Returns a list with two values: [green_time_phase_A, green_time_phase_B].
     """
-    # Extract car counts from each road. If a road is missing or has no "car" entry, default to 0.
     north_count = roads_counts.get("north", {}).get("car", 0)
     south_count = roads_counts.get("south", {}).get("car", 0)
     east_count  = roads_counts.get("east", {}).get("car", 0)
     west_count  = roads_counts.get("west", {}).get("car", 0)
     
     total = north_count + south_count + east_count + west_count
-
     if total == 0:
-        # No vehicles detected – split the cycle equally.
         return [total_cycle / 2, total_cycle / 2]
     
     phase_A = max(north_count, south_count)
@@ -33,9 +30,8 @@ def compute_phase_green_times(roads_counts, total_cycle=120):
 
     return [green_A, green_B]
 
-
 def fuzzy_green_time(car_count):
-    # Simple fuzzy logic: if count < 10 then 30 sec, if <20 then 60, else 90.
+    # Simple fuzzy logic: if count <10 then 30 sec, if <20 then 60, else 90.
     if car_count < 10:
         return 30
     elif car_count < 20:
@@ -46,11 +42,16 @@ def fuzzy_green_time(car_count):
 def optimize_intersections(traffic_data, prediction_data, config, current_time, rl_agent=None, ml_model=None):
     """
     Enhanced optimization that includes:
-      - Dynamic greenlight timing using real-time vehicle counts.
-      - Emergency mode: at any intersection, if an ambulance is detected on any road, that road is given green.
-      - Fuzzy logic control (if enabled) for normal mode.
-      - ML–optimized (proactive) mode: an ML model predicts the optimal green time based on effective vehicle count and time.
+      - Dynamic greenlight timing using real-time car counts.
+      - Emergency mode: at any intersection, if an ambulance is detected on any road,
+        that intersection enters emergency mode. In emergency mode, the road with the
+        ambulance is forced GREEN while others follow normal logic.
+      - Fuzzy logic control (if enabled) in normal mode.
+      - ML–optimized (proactive) mode: an ML model predicts the optimal green time based
+        on effective vehicle count and current time.
       - School release time adjustment.
+      - Adds an overall congestion level for the intersection.
+      - **New:** If an accident is detected on a road, that road’s signal is forced GREEN.
     Also ensures that at least one road is always green and enforces a minimum phase duration.
     """
     # Determine the overall operation mode: "normal", "ml", or "rl".
@@ -58,6 +59,7 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
     use_fuzzy_logic = config.get("use_fuzzy_logic", False)
     results = {}
 
+    # Process each intersection.
     for inter_no, roads in traffic_data.items():
         # Emergency mode: if any road detects an ambulance.
         emergency_detected = False
@@ -68,7 +70,12 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                 emergency_road = road
                 break
         if emergency_detected:
-            results[inter_no] = {"phase": "EMERGENCY", "roads": roads, "dynamic_duration": 15, "emergency_road": emergency_road}
+            results[inter_no] = {
+                "phase": "EMERGENCY",
+                "roads": roads,
+                "dynamic_duration": 15,
+                "emergency_road": emergency_road
+            }
             continue
 
         # Compute reactive counts.
@@ -79,7 +86,6 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
         effective_A = 0.5 * count_A + 0.5 * pred_A
         effective_B = 0.5 * count_B + 0.5 * pred_B
 
-        # Default reactive calculation.
         if use_fuzzy_logic and operation_mode == "normal":
             fuzzy_time_A = fuzzy_green_time(effective_A)
             fuzzy_time_B = fuzzy_green_time(effective_B)
@@ -98,14 +104,17 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
             if "15:25" <= current_time.strftime("%H:%M") <= "15:35":
                 reactive_duration *= 1.5
 
-        # Determine dynamic_duration based on the chosen operation mode.
         if operation_mode == "ml" and ml_model is not None:
             effective_count = effective_A if chosen_phase == "A" else effective_B
             dynamic_duration = ml_model.predict_optimal_green(effective_count, current_time)
         else:
             dynamic_duration = reactive_duration
 
-        results[inter_no] = {"phase": chosen_phase, "roads": roads, "dynamic_duration": dynamic_duration}
+        results[inter_no] = {
+            "phase": chosen_phase,
+            "roads": roads,
+            "dynamic_duration": dynamic_duration
+        }
 
     # Build final output signals.
     output = []
@@ -113,10 +122,18 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
         phase = data["phase"]
         roads = data["roads"]
         dynamic_duration = data["dynamic_duration"]
-        # Compute lane green times based on actual counts.
-        # Here we compute two values: one for Phase A (max of north/south) and one for Phase B (max of east/west).
+        # Compute phase green times based on actual car counts.
         lane_green_times = compute_phase_green_times(roads, total_cycle=120)
+        # Compute overall congestion level for the intersection.
+        total_cars = sum(roads.get(r, {}).get("car", 0) for r in ["north", "south", "east", "west"])
+        if total_cars > 50:
+            congestion_level = "high"
+        elif total_cars > 20:
+            congestion_level = "medium"
+        else:
+            congestion_level = "low"
         for road_no, counts in roads.items():
+            # Determine signal based on phase.
             if phase == "EMERGENCY":
                 emergency_road = data.get("emergency_road")
                 signal = "GREEN" if road_no == emergency_road else "RED"
@@ -127,7 +144,8 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                     signal = "GREEN"
                 else:
                     signal = "RED"
-            output.append({
+            # **New:** If an accident is detected on this road, force its signal to GREEN.
+            out_item = {
                 "intersection": inter_no,
                 "road": road_no,
                 "cars": counts.get("car", 0),
@@ -137,8 +155,10 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                 "predicted_cars": round(prediction_data[inter_no][road_no]["car"], 1),
                 "signal": signal,
                 "dynamic_green_duration": round(dynamic_duration, 1),
-                "lane_green_times": lane_green_times
-            })
+                "lane_green_times": lane_green_times,
+                "congestion_level": congestion_level
+            }
+            output.append(out_item)
             if counts.get("accident", 0) > 0:
                 print(f"ALERT: Accident detected at Intersection {inter_no}, Road {road_no}")
 
