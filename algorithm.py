@@ -31,7 +31,7 @@ def compute_phase_green_times(roads_counts, total_cycle=120):
     return [green_A, green_B]
 
 def fuzzy_green_time(car_count):
-    # Simple fuzzy logic: if count <10 then 30 sec, if <20 then 60, else 90.
+    # Simple fuzzy logic: if count < 10 then 30 sec, if < 20 then 60, else 90.
     if car_count < 10:
         return 30
     elif car_count < 20:
@@ -44,14 +44,17 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
     Enhanced optimization that includes:
       - Dynamic greenlight timing using real-time car counts.
       - Emergency mode: at any intersection, if an ambulance is detected on any road,
-        the entire phase containing that road is set to GREEN.
+        that intersection enters emergency mode. In emergency mode, the entire phase 
+        corresponding to the ambulance's location is forced GREEN.
       - Fuzzy logic control (if enabled) in normal mode.
       - ML–optimized (proactive) mode: an ML model predicts the optimal green time based
         on effective vehicle count and current time.
       - School release time adjustment.
       - Adds an overall congestion level for the intersection.
       - Accident detection is reported only (and does not affect the signal).
-    Also ensures that one entire phase is always green and enforces a minimum phase duration.
+      - **New:** If one phase has no vehicles while the other has some, force the phase 
+        with vehicles.
+    Also ensures that one entire phase is always green.
     """
     operation_mode = config.get("operation_mode", "normal")
     use_fuzzy_logic = config.get("use_fuzzy_logic", False)
@@ -68,11 +71,8 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                 emergency_road = road
                 break
         if emergency_detected:
-            # Determine the emergency phase based on the road where the ambulance was detected.
-            if emergency_road in ["north", "south"]:
-                emergency_phase = "A"
-            else:
-                emergency_phase = "B"
+            # Determine emergency phase based on the road where the ambulance was detected.
+            emergency_phase = "A" if emergency_road in ["north", "south"] else "B"
             results[inter_no] = {
                 "phase": "EMERGENCY",
                 "roads": roads,
@@ -89,18 +89,33 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
         effective_A = 0.5 * count_A + 0.5 * pred_A
         effective_B = 0.5 * count_B + 0.5 * pred_B
 
-        if use_fuzzy_logic and operation_mode == "normal":
-            fuzzy_time_A = fuzzy_green_time(effective_A)
-            fuzzy_time_B = fuzzy_green_time(effective_B)
-            chosen_phase = "A" if fuzzy_time_A >= fuzzy_time_B else "B"
-            reactive_duration = fuzzy_time_A if chosen_phase == "A" else fuzzy_time_B
+        # --- New forced phase switch logic ---
+        # Compute total vehicles for each phase including cars and schoolbuses.
+        phase_A_total = sum(roads.get(r, {}).get("car", 0) + roads.get(r, {}).get("schoolbus", 0) 
+                            for r in ["north", "south"])
+        phase_B_total = sum(roads.get(r, {}).get("car", 0) + roads.get(r, {}).get("schoolbus", 0) 
+                            for r in ["east", "west"])
+        if phase_A_total == 0 and phase_B_total > 0:
+            chosen_phase = "B"
+            print(f"Intersection {inter_no}: No vehicles in north-south; switching to Phase B.")
+        elif phase_B_total == 0 and phase_A_total > 0:
+            chosen_phase = "A"
+            print(f"Intersection {inter_no}: No vehicles in east-west; switching to Phase A.")
         else:
-            chosen_phase = "A" if effective_A >= effective_B else "B"
-            base_duration = config.get("base_duration", 10)
-            extension_factor = config.get("extension_factor", 0.5)
-            max_extension = config.get("max_extension", 20)
-            effective_count = effective_A if chosen_phase == "A" else effective_B
-            reactive_duration = base_duration + min(effective_count * extension_factor, max_extension)
+            # Decide based on fuzzy logic if enabled in normal mode, else compare effective counts.
+            if use_fuzzy_logic and operation_mode == "normal":
+                fuzzy_time_A = fuzzy_green_time(effective_A)
+                fuzzy_time_B = fuzzy_green_time(effective_B)
+                chosen_phase = "A" if fuzzy_time_A >= fuzzy_time_B else "B"
+            else:
+                chosen_phase = "A" if effective_A >= effective_B else "B"
+
+        # Now compute the reactive_duration.
+        base_duration = config.get("base_duration", 10)
+        extension_factor = config.get("extension_factor", 0.5)
+        max_extension = config.get("max_extension", 20)
+        effective_count = effective_A if chosen_phase == "A" else effective_B
+        reactive_duration = base_duration + min(effective_count * extension_factor, max_extension)
 
         # School release time adjustment for intersection "3" on road "west".
         if inter_no == "3":
@@ -136,7 +151,6 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
             congestion_level = "low"
         for road_no, counts in roads.items():
             if phase == "EMERGENCY":
-                # Use emergency_phase to determine which phase should be GREEN.
                 emergency_phase = data.get("emergency_phase")
                 if emergency_phase == "A":
                     signal = "GREEN" if road_no in ["north", "south"] else "RED"
@@ -149,7 +163,7 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                     signal = "GREEN"
                 else:
                     signal = "RED"
-            # Accident detection is now only reported, not affecting the signal.
+            # Accident detection is reported but does not change the signal.
             out_item = {
                 "intersection": inter_no,
                 "road": road_no,
@@ -167,6 +181,7 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
             if counts.get("accident", 0) > 0:
                 print(f"ALERT: Accident detected at Intersection {inter_no}, Road {road_no}")
 
+    # If RL mode is chosen, override outputs with RL agent recommendations.
     if operation_mode == "rl" and rl_agent is not None:
         rl_signals = rl_agent.get_optimal_signals(traffic_data, config)
         for inter_id, roads in rl_signals.items():
@@ -177,8 +192,8 @@ def optimize_intersections(traffic_data, prediction_data, config, current_time, 
                         out["dynamic_green_duration"] = rl_data["dynamic_duration"]
                         out["mode"] = "DRL_Optimized"
 
-    # Ensure that one entire phase is active at each intersection.
-    # For non-emergency intersections, if phase is "A", then north & south must be green; if "B", then east & west.
+    # Enforce that one entire phase is active: if phase is "A", then north & south must be GREEN and east & west RED,
+    # if phase is "B", then east & west GREEN and north & south RED.
     for inter_no, data in results.items():
         if data.get("phase") == "EMERGENCY":
             continue
