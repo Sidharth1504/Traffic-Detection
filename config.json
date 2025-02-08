@@ -1,23 +1,20 @@
 {
+  "min_phase_duration": 5,
+  "base_duration": 10,
+  "extension_factor": 0.5,
+  "max_extension": 20,
+  "prediction_alpha": 0.7,
+  "school_bus_time": "15:00",
+  "school_intersection": "1",
+  "use_rl_agent": true,
+  "train_rl_agent": true,
+  "rl_training_episodes": 1000,
   "grid": {
     "rows": 2,
     "cols": 3,
     "roi_width": 100,
-    "roi_height": 80,
+    "roi_height": 100,
     "start_x": 0,
-    "start_y": 20,
-    "intersection_gap_x": 250,
-    "intersection_gap_y": 250,
-    "spacing_x": 0,
-    "spacing_y": 0
-  },
-  "adjacency": {
-    "1": "2",
-    "2": "3",
-    "4": "5",
-    "5": "6"
-  },
-  "min_phase_duration": 5,
-  "school_bus_time": "15:00",
-  "school_bus_intersection": "1"
+    "start_y": 0
+  }
 }
