@@ -1,5 +1,5 @@
 {
-  "min_phase_duration": 10,
+  "min_phase_duration": 5,
   "base_duration": 10,
   "extension_factor": 0.5,
   "max_extension": 20,
@@ -12,14 +12,6 @@
   "use_fuzzy_logic": true,
   "use_ml_optimized_mode": true,
   "operation_mode": "normal",
-  "historical_data": {
-    "1": {"car": 20},
-    "2": {"car": 25},
-    "3": {"car": 30},
-    "4": {"car": 15},
-    "5": {"car": 10},
-    "6": {"car": 35}
-  },
   "grid": {
     "rows": 2,
     "cols": 3,

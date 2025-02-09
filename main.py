@@ -46,7 +46,7 @@ def compute_intersections_from_grid(grid_config, frame_width, frame_height):
 
 async def send_data(session, url, data):
     try:
-        async with session.post(url + "/traffic/signal-data", json={"data": data}, timeout=5) as response:
+        async with session.post(url + "traffic/signal-data", json={"data": data}, timeout=5) as response:
             if response.status == 204:
                 print("Data sent successfully")
             else:
@@ -60,12 +60,13 @@ async def send_data(session, url, data):
         print(f"An error occurred while sending data: {e}")
 
 async def main():
-    url = "https://api.ibreakstuff.upayan.dev//"
+    url = "https://api.ibreakstuff.upayan.dev/"
     config = load_config("config.json")
-    # cap = cv2.VideoCapture(1)
+    # Uncomment the following two lines if you want to use a video file.
     video_path = "data/sample_video8.mp4"
     cap = cv2.VideoCapture(video_path)
-    modes = ["normal", "ml", "rl"]
+    # cap = cv2.VideoCapture(1)  # using the default camera
+    # cap.set(cv2.CAP_PROP_FOCUS, 60)
     if not cap.isOpened():
         print("Error: Could not open video.")
         return
@@ -80,12 +81,12 @@ async def main():
 
     detector = VehicleDetector()
     scale_factor = 1.5
-    min_phase_duration = config.get("min_phase_duration", 10)
+    min_phase_duration = config.get("min_phase_duration", 5)  # minimum wait of 5 sec
     last_phase_state = {}
     last_phase_switch_time = {}
     config["last_school_bus_green"] = config.get("last_school_bus_green", datetime.datetime.now())
 
-    # Initialize prediction data for each intersection (using an exponential moving average).
+    # Initialize prediction data for each intersection.
     prediction_data = {}
     for inter_no, inter_data in intersections_config.items():
         prediction_data[inter_no] = {}
@@ -104,7 +105,8 @@ async def main():
     ml_model = MLModel()
     ml_model.train_model()
 
-    # Set the operation mode: "normal", "ml", or "rl"
+    # Define available modes and set the initial mode.
+    modes = ["normal", "ml", "rl"]
     operation_mode = config.get("operation_mode", "normal")
     mode_index = modes.index(operation_mode)
 
@@ -140,14 +142,14 @@ async def main():
                     draw_detections(roi_frame, detections)
                     frame[y:y+h, x:x+w] = roi_frame
 
-                    # Update prediction using an exponential moving average.
+                    # Update prediction data using an exponential moving average.
                     prev_pred = prediction_data[inter_no][road_no]["car"]
                     current_count = counts["car"]
                     new_pred = alpha * current_count + (1 - alpha) * prev_pred
                     prediction_data[inter_no][road_no]["car"] = new_pred
 
             current_time = datetime.datetime.now()
-            # Call the optimization algorithm. (Pass the ml_model to allow ML mode.)
+            # Call the optimization algorithm. Pass ml_model or rl_agent based on the current mode.
             output_signals, computed_phases = optimize_intersections(
                 traffic_data, prediction_data, config, current_time,
                 rl_agent if operation_mode == "rl" else None,
@@ -155,29 +157,27 @@ async def main():
             )
             current_time_sec = time.time()
             final_phases = {}
-                        # Adjust computed phases based on vehicle counts:
-            # For each intersection, if the currently computed phase has zero cars
-            # and the opposite phase has some cars, force a switch.
-            for inter_no in computed_phases:
-                if computed_phases[inter_no] == "A":
-                    # For Phase A, sum the counts on north and south.
-                    count_current = (traffic_data[inter_no].get("north", {}).get("car", 0) +
-                                     traffic_data[inter_no].get("south", {}).get("car", 0))
-                    count_other   = (traffic_data[inter_no].get("east", {}).get("car", 0) +
-                                     traffic_data[inter_no].get("west", {}).get("car", 0))
-                else:  # computed_phases[inter_no] == "B"
-                    count_current = (traffic_data[inter_no].get("east", {}).get("car", 0) +
-                                     traffic_data[inter_no].get("west", {}).get("car", 0))
-                    count_other   = (traffic_data[inter_no].get("north", {}).get("car", 0) +
-                                     traffic_data[inter_no].get("south", {}).get("car", 0))
-                # If the current phase has no vehicles but the other has, force a switch.
-                if count_current == 0 and count_other > 0:
-                    computed_phases[inter_no] = "B" if computed_phases[inter_no] == "A" else "A"
-                    print(f"Intersection {inter_no}: Switching phase due to zero cars in current phase.")
+            for inter_no, new_phase in computed_phases.items():
+                if inter_no not in last_phase_state:
+                    last_phase_state[inter_no] = new_phase
+                    last_phase_switch_time[inter_no] = current_time_sec
+                    final_phases[inter_no] = new_phase
+                else:
+                    prev_phase = last_phase_state[inter_no]
+                    if new_phase != prev_phase:
+                        if current_time_sec - last_phase_switch_time[inter_no] >= min_phase_duration:
+                            last_phase_state[inter_no] = new_phase
+                            last_phase_switch_time[inter_no] = current_time_sec
+                            final_phases[inter_no] = new_phase
+                        else:
+                            final_phases[inter_no] = prev_phase
+                    else:
+                        final_phases[inter_no] = prev_phase
+
+            # Append the current mode to each output.
             for signal in output_signals:
-                if "mode" not in signal:
-                    # Append the current mode to the output.
-                    signal["mode"] = operation_mode.capitalize()
+                signal["mode"] = ( "DRL Optimized" if operation_mode == "rl"
+                                   else ("ML Predictive" if operation_mode == "ml" else "Normal") )
 
             # Log congestion history every cycle.
             log_congestion(traffic_data, current_time)
@@ -198,10 +198,11 @@ async def main():
             key = cv2.waitKey(30) & 0xFF
             if key == ord('q'):
                 break
-            # Press 't' to toggle DRL mode (only applicable if you want to switch between ml/normal and rl).
+            # Press 't' to cycle through the modes.
             if key == ord('t'):
                 mode_index = (mode_index + 1) % len(modes)
                 operation_mode = modes[mode_index]
+                config["operation_mode"] = operation_mode  # update config for consistency
                 print(f"Operation Mode switched to {operation_mode}")
             await asyncio.sleep(0)
 
